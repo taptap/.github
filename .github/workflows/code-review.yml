@@ -1,4 +1,4 @@
-name: Claude Code Review
+name: Code Review
 
 on:
   pull_request:
@@ -28,6 +28,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: Request Copilot review
+        run: |
+          gh pr edit "$PR_NUMBER" -R "$REPO" --add-reviewer @copilot
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+
       - uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}

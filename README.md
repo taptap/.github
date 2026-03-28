@@ -4,16 +4,16 @@ Org-wide shared workflows and configurations for **taptap**.
 
 ## Reusable Workflows
 
-### Claude Code Review
+### Code Review
 
-AI-powered pull request review using [Claude Code Action](https://github.com/anthropics/claude-code-action). It reviews every non-draft PR for code quality, correctness, and security, posting inline comments on specific lines.
+AI-powered pull request review using [Claude Code Action](https://github.com/anthropics/claude-code-action) and [GitHub Copilot](https://docs.github.com/en/copilot). It reviews every non-draft PR for code quality, correctness, and security, posting inline comments on specific lines.
 
 #### Usage
 
-Create `.github/workflows/claude-code-review.yml` in your repo:
+Create `.github/workflows/code-review.yml` in your repo:
 
 ```yaml
-name: Claude Code Review
+name: Code Review
 
 on:
   pull_request:
@@ -26,7 +26,7 @@ permissions:
 
 jobs:
   review:
-    uses: taptap/.github/.github/workflows/claude-code-review.yml@main
+    uses: taptap/.github/.github/workflows/code-review.yml@main
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       # ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}  # optional
