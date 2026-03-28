@@ -19,6 +19,10 @@ on:
   pull_request:
     types: [opened, synchronize, ready_for_review]
 
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   review:
     uses: taptap/.github/.github/workflows/claude-code-review.yml@main
