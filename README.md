@@ -29,17 +29,23 @@ jobs:
     uses: taptap/.github/.github/workflows/code-review.yml@main
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      # ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}  # optional
 ```
 
 #### Secrets
 
-| Secret               | Required | Description                                     |
-| -------------------- | -------- | ----------------------------------------------- |
-| `ANTHROPIC_API_KEY`  | Yes      | API key for Anthropic                           |
-| `ANTHROPIC_BASE_URL` | No       | Custom API base URL (e.g. for proxy or gateway) |
+| Secret              | Required | Description             |
+| ------------------- | -------- | ----------------------- |
+| `ANTHROPIC_API_KEY` | Yes      | API key for Anthropic   |
 
-Set these as **org-level secrets** so all repos inherit them, or per-repo if needed.
+Set this as an **org-level secret** so all repos inherit it, or per-repo if needed.
+
+#### Variables
+
+| Variable              | Required | Description                                     |
+| --------------------- | -------- | ----------------------------------------------- |
+| `ANTHROPIC_BASE_URL`  | No       | Custom API base URL (e.g. for proxy or gateway) |
+
+Set this as an **org-level variable** (not a secret) if you need to route requests through a proxy.
 
 #### Behavior
 
