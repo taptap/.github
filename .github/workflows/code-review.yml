@@ -7,8 +7,6 @@ on:
     secrets:
       ANTHROPIC_API_KEY:
         required: true
-      ANTHROPIC_BASE_URL:
-        required: false
 
 permissions:
   actions: read
