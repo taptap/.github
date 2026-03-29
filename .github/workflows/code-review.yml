@@ -76,4 +76,3 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
-          ANTHROPIC_CUSTOM_HEADERS: '{"anthropic-beta": "context-1m-2025-08-07,interleaved-thinking-2025-05-14"}'
