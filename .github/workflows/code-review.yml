@@ -11,6 +11,11 @@ on:
         description: Pull request number to review when called as a reusable workflow.
         required: true
         type: number
+      is_draft:
+        description: Whether the pull request is still a draft when called as a reusable workflow.
+        required: false
+        default: false
+        type: boolean
       head_repo_full_name:
         description: Head repository full name for same-repo validation.
         required: false
@@ -44,6 +49,7 @@ jobs:
       ) || (
         github.event_name == 'workflow_call' &&
         inputs.pr_number &&
+        !inputs.is_draft &&
         (
           !inputs.head_repo_full_name ||
           inputs.head_repo_full_name == github.repository
@@ -66,8 +72,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          # Full history keeps `git log` and `git blame` useful for review context.
-          fetch-depth: 0
+          # Keep enough history for `git log` and `git blame` without cloning everything.
+          fetch-depth: 100
 
       - uses: anthropics/claude-code-action@e69ec4d5e5868930cecb8da7360a51fa9c4de5d6 # v1
         with:
@@ -81,10 +87,10 @@ jobs:
             Keep the review concise: at most 10 findings total.
             Post findings as inline review comments on the specific lines where issues are found.
             Follow the guidelines in REVIEW.md if present.
+          # Keep the tool surface narrow: inline comments plus read-only PR inspection.
           claude_args: |
             --model opus
             --max-turns 30
-            # Keep the tool surface narrow: inline comments plus read-only PR inspection.
             --allowedTools "Read,Glob,Grep,mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*)"
         env:
           GH_TOKEN: ${{ github.token }}
