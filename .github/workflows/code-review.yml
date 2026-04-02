@@ -20,8 +20,11 @@ on:
         required: true
 
 permissions:
+  # `actions: read` keeps Actions metadata readable for the running job.
   actions: read
+  # `contents: read` is required for checkout and for Claude to inspect repository files.
   contents: read
+  # `pull-requests: write` is required to request the Copilot reviewer and post inline review comments.
   pull-requests: write
 
 concurrency:
@@ -63,6 +66,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
+          # Full history keeps `git log` and `git blame` useful for review context.
           fetch-depth: 0
 
       - uses: anthropics/claude-code-action@e69ec4d5e5868930cecb8da7360a51fa9c4de5d6 # v1
