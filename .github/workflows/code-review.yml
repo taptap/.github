@@ -29,6 +29,8 @@ permissions:
   actions: read
   # `contents: read` is required for checkout and for Claude to inspect repository files.
   contents: read
+  # `id-token: write` is required because `claude-code-action` requests an OIDC token internally.
+  id-token: write
   # `pull-requests: write` is required to request the Copilot reviewer and post inline review comments.
   pull-requests: write
 
