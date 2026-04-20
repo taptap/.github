@@ -81,19 +81,65 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |
-            Review this pull request for code quality, correctness, and security.
-            Analyze the diff in the context of the full codebase.
-            Only report actionable findings that are specific and important.
-            Use these severity levels in each finding: P1 for blocking or high-risk issues, P2 for meaningful issues, P3 for minor issues.
-            Skip generated files, lockfiles, vendored code, and style-only nits unless they hide a real bug.
-            Keep the review concise: at most 10 findings total.
-            Post findings as inline review comments on the specific lines where issues are found.
-            Follow the guidelines in REVIEW.md if present.
-          # Keep the tool surface narrow: inline comments plus read-only PR inspection.
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+
+            You are a senior code reviewer. The goal is to surface real, actionable issues — not noise.
+
+            ## Step 1: Reconcile previous review comments
+
+            Before reviewing anything new, handle your prior comments on this PR so issues are not reported twice across commits.
+
+            1. Fetch your previous inline comments:
+               `gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number || inputs.pr_number }}/comments --jq '[.[] | select(.user.login == "claude[bot]")]'`
+            2. Fetch the current diff: `gh pr diff ${{ github.event.pull_request.number || inputs.pr_number }}`
+            3. For each previous comment, read the **current** version of the file and check whether the issue is fixed:
+               - **Fixed**: reply with `gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number || inputs.pr_number }}/comments/{comment_id}/replies -f body="✅ Fixed. {brief description of the fix}"`, then resolve the thread (step 5).
+               - **Still present**: reply explaining it is still unresolved. **Do NOT open a new inline comment for the same issue.**
+               - **Partially fixed**: reply describing what remains.
+            4. Only open new inline comments for **genuinely new issues** not covered by any previous comment.
+            5. After replying to fixed comments, resolve their threads:
+               a. Get review thread IDs:
+                  `gh api graphql -f query='{ repository(owner:"${{ github.repository_owner }}", name:"${{ github.event.repository.name }}") { pullRequest(number:${{ github.event.pull_request.number || inputs.pr_number }}) { reviewThreads(first:100) { nodes { id isResolved comments(first:1) { nodes { databaseId body } } } } } } }'`
+               b. Match each fixed comment's databaseId to its thread node ID.
+               c. Resolve: `gh api graphql -f query='mutation { resolveReviewThread(input:{threadId:"THREAD_NODE_ID"}) { thread { isResolved } } }'`
+
+            ## Step 2: Review the new changes
+
+            Analyze the diff in the context of the full codebase. For each changed file, read the **full source** (not just the diff hunk) to understand context. Use `git blame` / `git log` on suspicious lines to understand history. Follow the guidelines in REVIEW.md if present.
+
+            ## Confidence and severity
+
+            Score every finding 0-100. Only report findings with confidence ≥ 75.
+            - 90-100: certain bug or security issue
+            - 75-89: highly confident, very likely a real problem
+            - <75: do not report
+
+            Use severity levels: P1 (blocking / high-risk), P2 (meaningful), P3 (minor).
+
+            ## False-positive filters — do NOT report
+
+            - Issues that already existed before this PR
+            - Style preferences or nits that a linter/formatter handles
+            - Missing comments on self-explanatory code
+            - Hypothetical future problems
+            - Code that "could be better" but works correctly
+            - Generated files, lockfiles, vendored code
+
+            ## Step 3: Output
+
+            - Post findings as inline review comments via `mcp__github_inline_comment__create_inline_comment`.
+            - Keep the review concise: at most 10 new findings.
+            - After all inline comments are posted, publish ONE summary comment via `gh pr comment ${{ github.event.pull_request.number || inputs.pr_number }} --body "..."`. Format:
+              - One-line verdict: ✅ Approved / ⚠️ Issues Found / 🔴 Changes Requested
+              - If any prior comments were resolved this run: "N previously reported issues fixed."
+              - List of new findings with severity (🔴 P1 / 🟡 P2 / 🟢 P3) and confidence.
+              - Brief overall assessment.
+          # Tool surface: inline comments + read-only PR inspection + scoped gh api (PR comments + GraphQL only) + gh pr comment for summary.
           claude_args: |
             --model opus
-            --max-turns 30
-            --allowedTools "Read,Glob,Grep,mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*)"
+            --max-turns 256
+            --allowedTools "Read,Glob,Grep,mcp__github_inline_comment__create_inline_comment,Bash(gh api repos/*/pulls/*/comments*),Bash(gh api graphql*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*)"
         env:
           GH_TOKEN: ${{ github.token }}
           ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL || 'https://api.anthropic.com' }}
