@@ -183,16 +183,25 @@ claude_args: |
 
    ```yaml
    - id: compose-tools
+     env:
+       # Pass via env, NOT inline ${{ }} interpolation in `run:`. Inline expansion
+       # happens at YAML parse time and concatenates the raw input straight into
+       # the shell script — exactly the GitHub Actions script-injection pattern
+       # §6.1 is meant to block. Passing via env makes it a proper shell variable
+       # that the shell never re-parses.
+       EXTRA: ${{ inputs.extra_allowed_tools }}
      run: |
        BASE='Read,Glob,Grep,mcp__github_inline_comment__create_inline_comment,Bash(gh api repos/*/pulls/*/comments*),Bash(gh api graphql*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*)'
-       EXTRA='${{ inputs.extra_allowed_tools }}'
-       # §6 校验已经在更早的 step 里做过，到这里 EXTRA 要么是空，要么是已通过白名单的安全字符串
+       # §6.4's validate-extra-tools step has already run; here EXTRA is either
+       # empty or a string that passed the strict allowlist + character filter.
        if [ -n "$EXTRA" ]; then
          echo "tools=${BASE},${EXTRA}" >> "$GITHUB_OUTPUT"
        else
          echo "tools=${BASE}" >> "$GITHUB_OUTPUT"
        fi
    ```
+
+   The same `env:` pattern (not inline `${{ }}` in `run:`) applies to the §6.4 `validate-extra-tools` step itself — defense in depth even before the validator runs.
 
 2. **`claude_args: |` 是 YAML literal block scalar，保留换行。** `claude-code-action` 已经按行解析这个块为 args 数组（PR #14 合入的 `code-review.yml` 就是这种写法，工作正常）。RFC 这里沿用同样的格式，**不引入新的下游消费假设**。
 
