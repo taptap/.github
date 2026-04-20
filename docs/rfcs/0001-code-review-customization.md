@@ -139,7 +139,9 @@ inputs:
 - 业务规则 X：详见 docs/business-rules/X.md
 ```
 
-**加载方式**：org workflow 的 prompt 已经写了 "Follow REVIEW.md if present"，Claude 自然会在 review 时 `Read` 这个文件。**无需 yaml 层改动**——只要 consumer repo 创建文件就生效。
+**加载方式**：org workflow 的 prompt 当前是 "Follow the guidelines in REVIEW.md if present"（无 `.github/` 前缀，指向仓库根目录）。本 RFC 选择 `.github/REVIEW.md` 路径需要**同步更新 prompt**为 "Read `.github/REVIEW.md` if present and apply project-specific guidance from it"——见 §4.3。这是单行字符串改动，不是行为破坏。
+
+> **设计取舍**：也可以把文件放在仓库根目录的 `REVIEW.md`，这样 prompt 字面不需要改。但 `.github/REVIEW.md` 语义更清晰（"这是给 CI 看的，不是给开发者读的项目文档"），且不污染根目录。一行 prompt 改动换更好的归位，划算。
 
 **与 workflow inputs 的关系**：
 - `paths_skip` input 是**结构化**的硬过滤（org workflow 在 prompt 里告诉 Claude "skip these globs"）
@@ -172,8 +174,27 @@ claude_args: |
   --model ${{ inputs.model }}
   --max-turns ${{ inputs.max_turns }}
   --max-budget-usd ${{ inputs.max_budget_usd }}
-  --allowedTools "...,${{ inputs.extra_allowed_tools }}"
+  --allowedTools "${{ steps.compose-tools.outputs.tools }}"
 ```
+
+**两点实现细节，避免 yaml 字符串拼接陷阱：**
+
+1. **`extra_allowed_tools` 拼接走前置 step，不走内联 `${{ }}`。** 直接 `"...,${{ inputs.extra_allowed_tools }}"` 在 input 为空时会展开成 `"...,"`（尾随逗号），可能让 Claude CLI 解析出空 pattern；更严重的是把 raw input 写进 yaml 字符串等于打开 shell 元字符注入面（见 §6）。改为：
+
+   ```yaml
+   - id: compose-tools
+     run: |
+       BASE='Read,Glob,Grep,mcp__github_inline_comment__create_inline_comment,Bash(gh api repos/*/pulls/*/comments*),Bash(gh api graphql*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*)'
+       EXTRA='${{ inputs.extra_allowed_tools }}'
+       # §6 校验已经在更早的 step 里做过，到这里 EXTRA 要么是空，要么是已通过白名单的安全字符串
+       if [ -n "$EXTRA" ]; then
+         echo "tools=${BASE},${EXTRA}" >> "$GITHUB_OUTPUT"
+       else
+         echo "tools=${BASE}" >> "$GITHUB_OUTPUT"
+       fi
+   ```
+
+2. **`claude_args: |` 是 YAML literal block scalar，保留换行。** `claude-code-action` 已经按行解析这个块为 args 数组（PR #14 合入的 `code-review.yml` 就是这种写法，工作正常）。RFC 这里沿用同样的格式，**不引入新的下游消费假设**。
 
 ## 5. Consumer 迁移示例
 
@@ -183,6 +204,8 @@ claude_args: |
 # maker/.github/workflows/code-review.yml
 jobs:
   review:
+    # NOTE: @main is current convention while versioning is undecided (see §8 Q3).
+    # Once a tag strategy is agreed, switch to @v1 to insulate against breaking changes.
     uses: taptap/.github/.github/workflows/code-review.yml@main
     with:
       pr_number: ${{ github.event.pull_request.number }}
@@ -199,6 +222,7 @@ jobs:
 ```yaml
 jobs:
   review:
+    # NOTE: @main is current convention while versioning is undecided (see §8 Q3).
     uses: taptap/.github/.github/workflows/code-review.yml@main
     with:
       pr_number: ${{ github.event.pull_request.number }}
@@ -215,9 +239,31 @@ jobs:
 
 ## 6. 安全模型：`extra_allowed_tools`
 
-让 consumer 自由扩 allowedTools 等于把执行权限的口子开给项目维护者。需要边界。
+让 consumer 自由扩 allowedTools 等于把执行权限的口子开给项目维护者，且 input 字符串会进入 yaml→shell 拼接链路，**两个攻击面**都要堵：
 
-**白名单方案**：org workflow 在使用 `extra_allowed_tools` 前先校验每条 pattern 是否匹配预定义的安全前缀列表：
+### 6.1 注入面：shell 元字符 / yaml 字符串突围
+
+raw input 直接拼进 `--allowedTools "...,${EXTRA}"` 时，恶意 input 可以突围引号：
+
+```
+Bash(pytest:*)" --dangerouslySkipPermissions "x
+```
+
+这条字面 prefix 看起来匹配 `Bash(pytest:*)`，但展开后变成 `--allowedTools "...,Bash(pytest:*)" --dangerouslySkipPermissions "x"`，多塞了一个 flag。
+
+**对策**：校验 step 在做 pattern 匹配**之前**先做字符级清洗——拒绝任何包含以下字符的 input：
+
+```
+"  '  `  $  \  ;  |  &  >  <  \n  \r  \0
+```
+
+逗号 `,` 是 pattern 分隔符，单独允许。其余 ASCII 控制字符也拒绝。
+
+### 6.2 语义面：精确匹配 vs 前缀匹配
+
+之前写的"白名单前缀列表"不够安全：consumer 传 `Bash(pytest test/../../etc/passwd)` 也能匹配 `Bash(pytest:*)` 的"前缀"。
+
+**对策**：白名单里**每条都是完整 pattern**，input 拆分后**逐条精确字符串相等**才放行——不允许子串、不允许前缀扩展：
 
 ```
 Bash(pytest:*)
@@ -239,21 +285,48 @@ Bash(eslint:*)
 Bash(tsc:*)
 ```
 
-**显式禁止**（即使在白名单语法范围内）：
+`*` 是 Claude Code allowedTools 自身的通配符语义（限制到该命令的子参数），和 pattern 字符串里的字面字符一起被精确比对。
+
+### 6.3 隐含的全局禁止
+
+即使将来扩白名单，下列绝不允许：
 - 任何带 `curl / wget / nc / ssh / scp / rsync` 的 pattern（外联）
 - 任何带 `rm / mv / cp / chmod / chown` 的 pattern（写文件系统）
-- 任何带 `gh api * --method POST/PUT/PATCH/DELETE` 之外的 GraphQL mutation 路径
+- 任何 `gh api ... -X POST/PUT/PATCH/DELETE` 形式的 mutation（除已经在 base allowedTools 里、专门授给 dedup/resolve 用的两条）
 - `Bash(*)` 这种全开通配
 
-**实现位置**：org workflow 加一个前置 step，shell 解析 `extra_allowed_tools`，遇到不匹配的 pattern 直接 `exit 1`。错误信息明确指向本 RFC 安全模型小节。
+### 6.4 实现位置
 
-**审计**：每次 review run 把最终生效的 allowedTools 打到 log（已经在做了），方便事后审查。
+org workflow 在 reusable workflow 入口加一个 `validate-extra-tools` step：
+
+1. 读 `inputs.extra_allowed_tools`
+2. 字符级清洗（§6.1），任何禁字符 → `exit 1` 报错指向本节
+3. 按 `,` 拆分，逐条与白名单**精确相等比对**，任何不匹配 → `exit 1`
+4. 通过后导出干净字符串给后续 step 使用（见 §4.3 的 `compose-tools`）
+
+错误信息明确指向本 RFC §6，并打印被拒绝的 pattern。
+
+### 6.5 审计
+
+每次 review run 把最终生效的 allowedTools 打到 log（PR #14 合入的 workflow 已经在打）。`validate-extra-tools` step 也把 input/output 都记录到 log。
 
 ## 7. 兼容性与版本
 
 - 所有新 input 都有默认值 → 现有 consumer 零改动
 - prompt 模板增量为追加（保持原 Step 1/2/3 结构），不破坏行为
-- 默认值保持与 PR #14 合入后一致（`max_turns: 256`, `max_budget_usd: 10`, `confidence_min: 75`）
+
+**默认值与现行 workflow 的对照**：
+
+| Input | 默认值 | 与 PR #14 合入后的 workflow |
+|---|---|---|
+| `model` | `opus` | 一致（现行就是 `--model opus`） |
+| `max_turns` | `256` | 一致（PR #14 已经设到 256） |
+| `max_budget_usd` | `10` | **新增**（现行没有 budget 上限） |
+| `confidence_min` | `75` | **形式上新增**——现行 workflow 在 prompt 里写死了 "Only report findings with confidence ≥ 75"，本 RFC 把它从 prompt 字面提到 input 参数化 |
+| `max_findings` | `10` | **形式上新增**——同上，现行 prompt 里写死 "at most 10 new findings" |
+| `paths_focus / paths_skip / extra_allowed_tools` | 空 | **新增**，空时不影响行为 |
+
+唯一行为变化是引入 `max_budget_usd: 10` 上限——超出会中止 review。`10 USD/run` 应当远高于实际开销（参考 maker#439 一次 ~4min × opus 远低于 $1），属于安全网而非常态约束。如担心切换震动，可在 Phase 1 默认 `0`（无上限）后续再调高。
 
 **未来破坏性改动**：见 §8。
 
