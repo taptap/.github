@@ -126,15 +126,20 @@ jobs:
             - Code that "could be better" but works correctly
             - Generated files, lockfiles, vendored code
 
-            ## Output
+            ## Step 3: Output
 
             - Post findings as inline review comments via `mcp__github_inline_comment__create_inline_comment`.
             - Keep the review concise: at most 10 new findings.
-          # Tool surface: inline comments + read-only PR inspection + gh api/pr comment for dedup and summary.
+            - After all inline comments are posted, publish ONE summary comment via `gh pr comment ${{ github.event.pull_request.number || inputs.pr_number }} --body "..."`. Format:
+              - One-line verdict: ✅ Approved / ⚠️ Issues Found / 🔴 Changes Requested
+              - If any prior comments were resolved this run: "N previously reported issues fixed."
+              - List of new findings with severity (🔴 P1 / 🟡 P2 / 🟢 P3) and confidence.
+              - Brief overall assessment.
+          # Tool surface: inline comments + read-only PR inspection + scoped gh api (PR comments + GraphQL only) + gh pr comment for summary.
           claude_args: |
             --model opus
             --max-turns 256
-            --allowedTools "Read,Glob,Grep,mcp__github_inline_comment__create_inline_comment,Bash(gh api:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*)"
+            --allowedTools "Read,Glob,Grep,mcp__github_inline_comment__create_inline_comment,Bash(gh api repos/*/pulls/*/comments*),Bash(gh api graphql*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*)"
         env:
           GH_TOKEN: ${{ github.token }}
           ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL || 'https://api.anthropic.com' }}
