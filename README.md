@@ -33,17 +33,17 @@ jobs:
 
 #### Secrets
 
-| Secret              | Required | Description             |
-| ------------------- | -------- | ----------------------- |
-| `ANTHROPIC_API_KEY` | Yes      | API key for Anthropic   |
+| Secret              | Required | Description           |
+| ------------------- | -------- | --------------------- |
+| `ANTHROPIC_API_KEY` | Yes      | API key for Anthropic |
 
 Set this as an **org-level secret** so all repos inherit it, or per-repo if needed.
 
 #### Variables
 
-| Variable              | Required | Description                                     |
-| --------------------- | -------- | ----------------------------------------------- |
-| `ANTHROPIC_BASE_URL`  | No       | Custom API base URL (e.g. for proxy or gateway) |
+| Variable             | Required | Description                                     |
+| -------------------- | -------- | ----------------------------------------------- |
+| `ANTHROPIC_BASE_URL` | No       | Custom API base URL (e.g. for proxy or gateway) |
 
 Set this as an **org-level variable** (not a secret) if you need to route requests through a proxy.
 
