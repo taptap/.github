@@ -20,6 +20,11 @@ on:
         description: Head repository full name for same-repo validation.
         required: false
         type: string
+      request_copilot_review:
+        description: Whether to add @copilot as a PR reviewer. Set false to opt out per repository.
+        required: false
+        default: true
+        type: boolean
     secrets:
       ANTHROPIC_API_KEY:
         required: true
@@ -62,6 +67,9 @@ jobs:
     steps:
       - name: Request Copilot review
         # Copilot review is optional. Keep Claude review running if this request is unavailable.
+        # Reusable callers can opt out per repository by passing `request_copilot_review: false`.
+        # Direct `pull_request` runs (no inputs) keep requesting Copilot as before.
+        if: ${{ github.event_name != 'workflow_call' || inputs.request_copilot_review }}
         continue-on-error: true
         run: |
           gh pr edit "$PR_NUMBER" -R "$REPO" --add-reviewer @copilot
