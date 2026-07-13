@@ -25,6 +25,11 @@ on:
         required: false
         default: true
         type: boolean
+      model:
+        description: Claude model alias (opus / sonnet / haiku) or full model ID.
+        required: false
+        type: string
+        default: opus
     secrets:
       ANTHROPIC_API_KEY:
         required: true
@@ -145,7 +150,7 @@ jobs:
               - Brief overall assessment.
           # Tool surface: inline comments + read-only PR inspection + scoped gh api (PR comments + GraphQL only) + gh pr comment for summary.
           claude_args: |
-            --model opus
+            --model ${{ inputs.model || 'opus' }}
             --max-turns 256
             --allowedTools "Read,Glob,Grep,mcp__github_inline_comment__create_inline_comment,Bash(gh api repos/*/pulls/*/comments*),Bash(gh api graphql*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*)"
         env:
