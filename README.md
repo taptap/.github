@@ -33,11 +33,19 @@ jobs:
 
 #### Secrets
 
-| Secret              | Required | Description           |
-| ------------------- | -------- | --------------------- |
-| `ANTHROPIC_API_KEY` | Yes      | API key for Anthropic |
+Pass **one** of these. Both are declared optional so a repo can use whichever
+name it already has; the job fails fast if neither is set.
+
+| Secret                 | Required            | Description                                      |
+| ---------------------- | ------------------- | ------------------------------------------------ |
+| `ANTHROPIC_API_KEY`     | one of the two | Sent as `x-api-key`                          |
+| `ANTHROPIC_AUTH_TOKEN`  | one of the two | Sent as a bearer token, for gateways that want it |
 
 Set this as an **org-level secret** so all repos inherit it, or per-repo if needed.
+
+`ANTHROPIC_API_KEY` wins when both are present. This is a fallback on *which
+name exists*, not a retry when a credential is rejected — Actions cannot re-run
+a failed step with the other key without re-running the whole review.
 
 #### Inputs
 

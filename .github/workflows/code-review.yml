@@ -35,8 +35,15 @@ on:
         type: string
         default: claude-opus-5[1m]
     secrets:
+      # Both are optional so a caller can use either name; the gateway behind
+      # `vars.ANTHROPIC_BASE_URL` may want an `x-api-key` (API_KEY) or a bearer
+      # token (AUTH_TOKEN). Exactly one is required — the preflight step below
+      # fails fast with a readable message when neither is passed, which is the
+      # cost of dropping `required: true`.
       ANTHROPIC_API_KEY:
-        required: true
+        required: false
+      ANTHROPIC_AUTH_TOKEN:
+        required: false
 
 permissions:
   # `actions: read` keeps Actions metadata readable for the running job.
@@ -88,6 +95,15 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
           REPO: ${{ github.repository }}
 
+      - name: Check Anthropic credential is present
+        env:
+          ANTHROPIC_CREDENTIAL: ${{ secrets.ANTHROPIC_API_KEY || secrets.ANTHROPIC_AUTH_TOKEN }}
+        run: |
+          if [ -z "$ANTHROPIC_CREDENTIAL" ]; then
+            echo "::error::No Anthropic credential. Pass ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN in the caller's \`secrets:\` block (or use \`secrets: inherit\`)."
+            exit 1
+          fi
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -96,7 +112,10 @@ jobs:
 
       - uses: anthropics/claude-code-action@e69ec4d5e5868930cecb8da7360a51fa9c4de5d6 # v1
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Name-level fallback only: whichever secret the caller supplied wins.
+          # This is NOT a retry-on-auth-failure — Actions cannot re-run a failed
+          # step with a different credential without duplicating the whole review.
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY || secrets.ANTHROPIC_AUTH_TOKEN }}
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
