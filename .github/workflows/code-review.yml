@@ -85,7 +85,12 @@ jobs:
         # Copilot review is optional. Keep Claude review running if this request is unavailable.
         # Reusable callers can opt out per repository by passing `request_copilot_review: false`.
         # Direct `pull_request` runs (no inputs) keep requesting Copilot as before.
-        if: ${{ github.event_name != 'workflow_call' || inputs.request_copilot_review }}
+        #
+        # `inputs.pr_number` — not `github.event_name` — is what tells us this is
+        # a reusable call: in a called workflow `github.event_name` is the
+        # *caller's* event (`pull_request`), never `'workflow_call'`, so the old
+        # guard was always true and the opt-out silently did nothing.
+        if: ${{ !inputs.pr_number || inputs.request_copilot_review }}
         continue-on-error: true
         run: |
           gh pr edit "$PR_NUMBER" -R "$REPO" --add-reviewer @copilot
