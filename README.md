@@ -39,6 +39,27 @@ jobs:
 
 Set this as an **org-level secret** so all repos inherit it, or per-repo if needed.
 
+#### Inputs
+
+Only needed when calling this as a reusable workflow (`workflow_call`).
+
+| Input                    | Required | Default              | Description                                             |
+| ------------------------ | -------- | -------------------- | ------------------------------------------------------- |
+| `pr_number`              | Yes      | —                    | PR to review (`github.event.pull_request` is empty here) |
+| `is_draft`               | No       | `false`              | Skip the review while the PR is a draft                  |
+| `head_repo_full_name`    | No       | —                    | Head repo, for the same-repo (anti-fork) check           |
+| `request_copilot_review` | No       | `true`               | Set `false` to skip adding `@copilot` as a reviewer      |
+| `model`                  | No       | `claude-opus-5[1m]`  | Full model ID. Must be a model your gateway allows       |
+
+The default is a **pinned model ID rather than an alias** (`opus`): aliases are
+resolved inside the bundled Claude Code build, so bumping that build would
+silently change which model reviews your code.
+
+Whatever you pass must exist on the endpoint behind `ANTHROPIC_BASE_URL`. A
+model the gateway rejects surfaces as `403 ... Model is blocked` wrapped in
+Claude Code's `Failed to authenticate` text — which reads like a bad key but is
+not one.
+
 #### Variables
 
 | Variable             | Required | Description                                     |

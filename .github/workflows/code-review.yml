@@ -26,10 +26,14 @@ on:
         default: true
         type: boolean
       model:
-        description: Claude model alias (opus / sonnet / haiku) or full model ID.
+        description: >-
+          Full model ID for the review. Pinned rather than an alias (`opus`)
+          because alias resolution lives in the bundled Claude Code build and
+          drifts when that build is bumped — a silent model change under us.
+          Aliases still work if a caller passes one explicitly.
         required: false
         type: string
-        default: opus
+        default: claude-opus-5[1m]
     secrets:
       ANTHROPIC_API_KEY:
         required: true
@@ -150,7 +154,7 @@ jobs:
               - Brief overall assessment.
           # Tool surface: inline comments + read-only PR inspection + scoped gh api (PR comments + GraphQL only) + gh pr comment for summary.
           claude_args: |
-            --model ${{ inputs.model || 'opus' }}
+            --model '${{ inputs.model || 'claude-opus-5[1m]' }}'
             --max-turns 256
             --allowedTools "Read,Glob,Grep,mcp__github_inline_comment__create_inline_comment,Bash(gh api repos/*/pulls/*/comments*),Bash(gh api graphql*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*)"
         env:
