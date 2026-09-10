@@ -63,20 +63,27 @@ concurrency:
 
 jobs:
   review:
+    # Same `github.event_name` trap as the Copilot step below: a called workflow
+    # sees the *caller's* event, so the old `event_name == 'workflow_call'` branch
+    # was dead and `inputs.is_draft` / `inputs.head_repo_full_name` were never
+    # read. Reusable callers happened to be safe only because they are all
+    # triggered by `pull_request`, so the event payload carried the same facts.
+    #
+    # Now every clause is checked against whichever source is present, and a
+    # missing source is vacuously true. Net effect for today's callers is
+    # identical; a caller invoking this from a non-`pull_request` event is no
+    # longer skipped outright, and its inputs are now honoured.
     if: >-
+      (github.event.pull_request || inputs.pr_number) &&
+      !github.event.pull_request.draft &&
+      !inputs.is_draft &&
       (
-        github.event_name == 'pull_request' &&
-        github.event.pull_request &&
-        !github.event.pull_request.draft &&
+        !github.event.pull_request.head.repo.full_name ||
         github.event.pull_request.head.repo.full_name == github.repository
-      ) || (
-        github.event_name == 'workflow_call' &&
-        inputs.pr_number &&
-        !inputs.is_draft &&
-        (
-          !inputs.head_repo_full_name ||
-          inputs.head_repo_full_name == github.repository
-        )
+      ) &&
+      (
+        !inputs.head_repo_full_name ||
+        inputs.head_repo_full_name == github.repository
       )
     runs-on: ubuntu-latest
     timeout-minutes: 15
