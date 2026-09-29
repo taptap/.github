@@ -36,28 +36,28 @@ jobs:
 Pass **one** of these. Both are declared optional so a repo can use whichever
 name it already has; the job fails fast if neither is set.
 
-| Secret                 | Required            | Description                                      |
-| ---------------------- | ------------------- | ------------------------------------------------ |
-| `ANTHROPIC_API_KEY`     | one of the two | Sent as `x-api-key`                          |
-| `ANTHROPIC_AUTH_TOKEN`  | one of the two | Sent as a bearer token, for gateways that want it |
+| Secret                 | Required       | Description                                       |
+| ---------------------- | -------------- | ------------------------------------------------- |
+| `ANTHROPIC_API_KEY`    | one of the two | Sent as `x-api-key`                               |
+| `ANTHROPIC_AUTH_TOKEN` | one of the two | Sent as a bearer token, for gateways that want it |
 
 Set this as an **org-level secret** so all repos inherit it, or per-repo if needed.
 
-`ANTHROPIC_API_KEY` wins when both are present. This is a fallback on *which
-name exists*, not a retry when a credential is rejected — Actions cannot re-run
+`ANTHROPIC_API_KEY` wins when both are present. This is a fallback on _which
+name exists_, not a retry when a credential is rejected — Actions cannot re-run
 a failed step with the other key without re-running the whole review.
 
 #### Inputs
 
 Only needed when calling this as a reusable workflow (`workflow_call`).
 
-| Input                    | Required | Default              | Description                                             |
-| ------------------------ | -------- | -------------------- | ------------------------------------------------------- |
-| `pr_number`              | Yes      | —                    | PR to review (`github.event.pull_request` is empty here) |
-| `is_draft`               | No       | `false`              | Skip the review while the PR is a draft                  |
-| `head_repo_full_name`    | No       | —                    | Head repo, for the same-repo (anti-fork) check           |
-| `request_copilot_review` | No       | `true`               | Set `false` to skip adding `@copilot` as a reviewer      |
-| `model`                  | No       | `claude-opus-5[1m]`  | Full model ID. Must be a model your gateway allows       |
+| Input                    | Required | Default             | Description                                              |
+| ------------------------ | -------- | ------------------- | -------------------------------------------------------- |
+| `pr_number`              | Yes      | —                   | PR to review (`github.event.pull_request` is empty here) |
+| `is_draft`               | No       | `false`             | Skip the review while the PR is a draft                  |
+| `head_repo_full_name`    | No       | —                   | Head repo, for the same-repo (anti-fork) check           |
+| `request_copilot_review` | No       | `true`              | Set `false` to skip adding `@copilot` as a reviewer      |
+| `model`                  | No       | `claude-opus-5[1m]` | Full model ID. Must be a model your gateway allows       |
 
 The default is a **pinned model ID rather than an alias** (`opus`): aliases are
 resolved inside the bundled Claude Code build, so bumping that build would
@@ -81,6 +81,9 @@ Set this as an **org-level variable** (not a secret) if you need to route reques
 - **Triggers** on PR opened, synchronized (new push), or marked ready for review.
 - **Skips** draft PRs and PRs from forks (security).
 - **Concurrency** — only one review runs per PR at a time; new pushes cancel in-progress reviews.
+- **Summary** — PR-triggered runs reuse one Claude tracking comment. Each run replaces its body with the reviewed head SHA, current verdict, and all unresolved findings; it does not post a separate summary per push.
+- **Inline threads** — existing issues stay in their original threads. Fixed issues are resolved, existing confirmations are not repeated, and resolved threads are consulted only when checking a newly discovered regression.
+- **Existing PRs** — the pinned action reuses the first matching Claude bot comment on the first page of top-level comments. Older duplicate summaries are not deleted. A prior Claude Q&A comment can be selected, and a matching comment outside the first page is not found; these are upstream sticky-comment limitations.
 - **Timeout** — 15 minutes per run.
 
 #### Customization

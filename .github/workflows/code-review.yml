@@ -128,29 +128,44 @@ jobs:
           # This is NOT a retry-on-auth-failure — Actions cannot re-run a failed
           # step with a different credential without duplicating the whole review.
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY || secrets.ANTHROPIC_AUTH_TOKEN }}
+          # Reuse the tracking comment AND write the final summary into it.
+          # Sticky alone does not stop the model from posting a separate summary.
+          track_progress: true
+          use_sticky_comment: true
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
 
             You are a senior code reviewer. The goal is to surface real, actionable issues — not noise.
 
+            ## Output destination
+
+            This job reruns on every push. Maintain ONE top-level comment for the PR:
+            the tracking comment identified by `<claude_comment_id>` above. Update it
+            with `mcp__github_comment__update_claude_comment` (the `body` argument).
+            Never create a separate summary with `gh pr comment`, a new review body,
+            or REST/GraphQL comment creation. If updating the tracking comment fails,
+            report the failure in your final response and stop; do not post a fallback comment.
+
             ## Step 1: Reconcile previous review comments
 
             Before reviewing anything new, handle your prior comments on this PR so issues are not reported twice across commits.
 
-            1. Fetch your previous inline comments:
-               `gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number || inputs.pr_number }}/comments --jq '[.[] | select(.user.login == "claude[bot]")]'`
+            1. Fetch your previous review threads, including replies and resolution state:
+               `gh api graphql -f query='{ repository(owner:"${{ github.repository_owner }}", name:"${{ github.event.repository.name }}") { pullRequest(number:${{ github.event.pull_request.number || inputs.pr_number }}) { reviewThreads(first:100) { pageInfo { hasNextPage endCursor } nodes { id isResolved isOutdated comments(first:20) { pageInfo { hasNextPage endCursor } nodes { databaseId author { login } path line originalLine url body } } } } } } }' --jq '.data.repository.pullRequest.reviewThreads | {pageInfo, threads: [.nodes[] | select(.comments.nodes[0].author.login == "claude") | . as $thread | {id, isResolved, isOutdated, commentPageInfo: .comments.pageInfo, comments: [.comments.nodes[] | {databaseId, author: .author.login, path, line, originalLine, url, body: (if $thread.isResolved then .body[0:300] else .body end)}]}]}'`
+               Follow `pageInfo.hasNextPage` with `after: endCursor` until all thread pages are read.
+               For a thread you need to act on, fetch remaining comment pages if `commentPageInfo.hasNextPage` is true.
             2. Fetch the current diff: `gh pr diff ${{ github.event.pull_request.number || inputs.pr_number }}`
-            3. For each previous comment, read the **current** version of the file and check whether the issue is fixed:
-               - **Fixed**: reply with `gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number || inputs.pr_number }}/comments/{comment_id}/replies -f body="✅ Fixed. {brief description of the fix}"`, then resolve the thread (step 5).
-               - **Still present**: reply explaining it is still unresolved. **Do NOT open a new inline comment for the same issue.**
-               - **Partially fixed**: reply describing what remains.
-            4. Only open new inline comments for **genuinely new issues** not covered by any previous comment.
-            5. After replying to fixed comments, resolve their threads:
-               a. Get review thread IDs:
-                  `gh api graphql -f query='{ repository(owner:"${{ github.repository_owner }}", name:"${{ github.event.repository.name }}") { pullRequest(number:${{ github.event.pull_request.number || inputs.pr_number }}) { reviewThreads(first:100) { nodes { id isResolved comments(first:1) { nodes { databaseId body } } } } } } }'`
-               b. Match each fixed comment's databaseId to its thread node ID.
-               c. Resolve: `gh api graphql -f query='mutation { resolveReviewThread(input:{threadId:"THREAD_NODE_ID"}) { thread { isResolved } } }'`
+            3. Only reconcile **unresolved** threads. Do not re-check or reply to resolved threads.
+               Read the **current** file and the existing replies before deciding:
+               - **Fixed**: reply to the first comment's databaseId with `gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number || inputs.pr_number }}/comments/{comment_id}/replies -f body="✅ Fixed. {brief description of the fix and commit SHA}"`, then resolve the thread in the same run.
+               - **Fixed and already confirmed in a reply**: resolve without adding a redundant confirmation.
+               - **Still present or partially fixed**: keep the thread unresolved. Reply only if you have new information; do not repeat an existing assessment or open another thread for the same issue.
+               Resolve with `gh api graphql -f query='mutation { resolveReviewThread(input:{threadId:"THREAD_NODE_ID"}) { thread { isResolved } } }'`.
+            4. Only open new inline comments for **genuinely new issues** not covered by an existing thread.
+               Use resolved threads to detect regressions, not to reopen settled discussions.
+               If a newly found issue appears to be a regression, fetch that thread's full comments
+               with a GraphQL `node(id:)` query before reporting it and link the prior thread.
 
             ## Step 2: Review the new changes
 
@@ -178,16 +193,23 @@ jobs:
 
             - Post findings as inline review comments via `mcp__github_inline_comment__create_inline_comment`.
             - Keep the review concise: at most 10 new findings.
-            - After all inline comments are posted, publish ONE summary comment via `gh pr comment ${{ github.event.pull_request.number || inputs.pr_number }} --body "..."`. Format:
-              - One-line verdict: ✅ Approved / ⚠️ Issues Found / 🔴 Changes Requested
-              - If any prior comments were resolved this run: "N previously reported issues fixed."
-              - List of new findings with severity (🔴 P1 / 🟡 P2 / 🟢 P3) and confidence.
+            - Finish with ONE call to `mcp__github_comment__update_claude_comment`, replacing
+              the tracking comment's entire body with the PR's **current state**:
+              - Heading: `Claude Code Review — {reviewed head SHA}`.
+              - One-line verdict: ✅ Approved / ⚠️ Issues Found / 🔴 Changes Requested, with the unresolved issue count.
               - Brief overall assessment.
-          # Tool surface: inline comments + read-only PR inspection + scoped gh api (PR comments + GraphQL only) + gh pr comment for summary.
+              - All currently unresolved findings, including earlier findings that remain open,
+                with severity (🔴 P1 / 🟡 P2 / 🟢 P3), location, thread link, and confidence.
+              - An optional collapsed `<details>` section listing issues resolved in this run.
+            - Keep the summary concise; detailed reasoning belongs in inline threads.
+              Do not append review rounds, old verdicts, or historical summaries.
+          # Allow summary updates and thread replies, not new top-level summaries.
+          # Bash patterns are defense in depth; the prompt also forbids alternate posting paths.
           claude_args: |
             --model '${{ inputs.model || 'claude-opus-5[1m]' }}'
             --max-turns 256
-            --allowedTools "Read,Glob,Grep,mcp__github_inline_comment__create_inline_comment,Bash(gh api repos/*/pulls/*/comments*),Bash(gh api graphql*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*)"
+            --allowedTools "Read,Glob,Grep,mcp__github_comment__update_claude_comment,mcp__github_inline_comment__create_inline_comment,Bash(gh api repos/*/pulls/*/comments/*/replies*),Bash(gh api graphql:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*)"
+            --disallowedTools "Bash(*addComment*),Bash(*addPullRequestReview*),Bash(*pulls/*/reviews*),Bash(gh pr comment:*),Bash(gh pr review:*)"
         env:
           GH_TOKEN: ${{ github.token }}
           ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL || 'https://api.anthropic.com' }}
