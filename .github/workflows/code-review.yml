@@ -34,6 +34,16 @@ on:
         required: false
         type: string
         default: claude-opus-5[1m]
+      sticky_summary:
+        description: >-
+          Keep ONE top-level review comment per PR and rewrite it in place on
+          every push, instead of posting a new summary comment each run. Also
+          switches to the hardened thread-reconcile prompt (paginated thread
+          query, human-reply awareness, no repeat "still unresolved" replies,
+          stale-head guard). Requires a `pull_request` trigger in the caller.
+        required: false
+        default: false
+        type: boolean
     secrets:
       # Both are optional so a caller can use either name; the gateway behind
       # `vars.ANTHROPIC_BASE_URL` may want an `x-api-key` (API_KEY) or a bearer
@@ -122,7 +132,11 @@ jobs:
           # Keep enough history for `git log` and `git blame` without cloning everything.
           fetch-depth: 100
 
-      - uses: anthropics/claude-code-action@e69ec4d5e5868930cecb8da7360a51fa9c4de5d6 # v1
+      - name: Claude review (one summary comment per run)
+        # Legacy path, unchanged. Direct `pull_request` runs have no inputs, so
+        # `inputs.sticky_summary` is null and they keep landing here.
+        if: ${{ !inputs.sticky_summary }}
+        uses: anthropics/claude-code-action@e69ec4d5e5868930cecb8da7360a51fa9c4de5d6 # v1
         with:
           # Name-level fallback only: whichever secret the caller supplied wins.
           # This is NOT a retry-on-auth-failure — Actions cannot re-run a failed
@@ -188,6 +202,218 @@ jobs:
             --model '${{ inputs.model || 'claude-opus-5[1m]' }}'
             --max-turns 256
             --allowedTools "Read,Glob,Grep,mcp__github_inline_comment__create_inline_comment,Bash(gh api repos/*/pulls/*/comments*),Bash(gh api graphql*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*)"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL || 'https://api.anthropic.com' }}
+
+      - name: Claude review (sticky summary comment)
+        if: ${{ inputs.sticky_summary }}
+        uses: anthropics/claude-code-action@e69ec4d5e5868930cecb8da7360a51fa9c4de5d6 # v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY || secrets.ANTHROPIC_AUTH_TOKEN }}
+          # The sticky comment is created by the action itself (octokit, before
+          # the model starts), not by the model, so denying the model's own
+          # comment-creation paths below cannot suppress it:
+          #   - `track_progress` makes the action create a tracking comment and
+          #     hand the model `mcp__github_comment__update_claude_comment`.
+          #   - `use_sticky_comment` makes later runs reuse the first claude[bot]
+          #     top-level comment on the PR instead of creating another one.
+          # Both are required: without `track_progress` there is no comment to
+          # update, and with sticky alone the model can still post its own.
+          #
+          # Upstream caveats (create-initial.ts, not fixable here): sticky
+          # matches the FIRST claude[bot] top-level comment, so an earlier
+          # `@claude` answer from another workflow gets overwritten; and the
+          # lookup is not paginated, so past ~30 top-level comments it falls off
+          # page one and a new comment is created.
+          track_progress: true
+          use_sticky_comment: true
+          # Post inline comments immediately instead of buffering them for the
+          # post-session Haiku "real review vs probe" classifier, which can drop
+          # real findings. The prompt also passes `confirmed: true`.
+          classify_inline_comments: false
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+
+            You are a senior code reviewer. The goal is to surface real, actionable issues — not noise.
+            You only review and comment. Never edit files, commit, or push.
+
+            ## Where your output goes — read this first
+
+            This job re-runs on **every push** to the PR. Your review lives in exactly two places, both updated **in place**:
+
+            - **One sticky top-level comment** — the tracking comment in `<claude_comment_id>` above.
+              Rewrite it with `mcp__github_comment__update_claude_comment` (only the `body` param).
+              It is the same comment across every push, so it must read as **the current state of the PR**, not "another review round".
+            - **Inline review threads** — one thread per issue, for the whole life of that issue.
+              Reply in and resolve existing threads; never open a second thread for an issue already raised.
+
+            **Never post a new top-level comment.** `gh pr comment`, `gh pr review`, `gh api .../issues/*/comments`,
+            `.../pulls/*/reviews` and the `addComment` / `addPullRequestReview*` GraphQL mutations are denied.
+            Do not look for another route: if updating the sticky comment fails, say so in your final message and stop.
+
+            ## Stale-head guard
+
+            The commit you review is `git log -1 --format=%H` in the checkout.
+            Before Step 1 actions, before posting inline comments in Step 4, and before Step 5, run
+            `gh pr view ${{ github.event.pull_request.number || inputs.pr_number }} --json headRefOid,state,isDraft`.
+            If `headRefOid` differs from the reviewed commit, or the PR is no longer open / is a draft, **stop writing anything**
+            and end with a final message that this run is obsolete. A newer run owns the PR; replies based on an old commit are wrong.
+
+            ## Step 1: Reconcile your unresolved review threads (before looking for new issues)
+
+            Fetch **all** your threads in one query — Step 4 needs the resolved ones for regression checks.
+            Resolved threads carry only a `gist`, not the full text:
+
+            ```
+            gh api graphql -f query='{ repository(owner:"${{ github.repository_owner }}", name:"${{ github.event.repository.name }}") { pullRequest(number:${{ github.event.pull_request.number || inputs.pr_number }}) { reviewThreads(first:100) { nodes { id isResolved isOutdated comments(first:20) { nodes { databaseId author { login } path line originalLine createdAt body } } } } } } }' \
+              --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.comments.nodes[0].author.login == "claude") | {id, isResolved, isOutdated, dbid: .comments.nodes[0].databaseId, path: .comments.nodes[0].path, line: (.comments.nodes[0].line // .comments.nodes[0].originalLine), lastActivity: .comments.nodes[-1].createdAt, lastAuthor: .comments.nodes[-1].author.login} + (if .isResolved then {gist: (.comments.nodes[0].body | gsub("<[^>]*>";"") | gsub("\\[[^]]*\\]\\([^)]*\\)";"") | .[0:300])} else {body: .comments.nodes[0].body, replies: [.comments.nodes[1:][] | {a: .author.login, at: .createdAt, body}]} end)]'
+            ```
+
+            Notes on this query:
+
+            - Do NOT widen `gist` back to the full body. Unbounded review history in context kills long PRs
+              with "prompt too long"; the truncation happens in the shell so the full text never enters context.
+            - `replies` includes **human** replies — the only way to know a human already answered.
+            - GraphQL author login is `claude`; the REST API says `claude[bot]`. Do not "fix" one into the other.
+            - Use `gist` only to **filter** candidates, never to judge. Use `path` + `line` as an accelerator.
+
+            **Act only on `isResolved == false` threads here.** Resolved threads are closed: do not re-verify or reply to them.
+
+            For each unresolved thread, read the **current** version of the file (if `line` is null because the thread is outdated,
+            locate the code by content), then:
+
+            - **Fixed** → reply, then resolve, in the same step:
+              1. `gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number || inputs.pr_number }}/comments/{dbid}/replies -f body="✅ Fixed. {what changed, with sha}"`
+              2. `gh api graphql -f query='mutation { resolveReviewThread(input:{threadId:"{thread id}"}) { thread { isResolved } } }'`
+              Never reply without resolving: an answered-but-open thread comes back next push and gets answered twice.
+            - **Fixed, and a human already replied confirming it** (a non-`claude` author in `replies`, consistent with the code)
+              → resolve only, **without** adding your own reply.
+            - **A human replied explaining why it is acceptable / intended** and the reasoning holds → reply once acknowledging, then resolve.
+              If the reasoning does not hold, reply once with the specific counter-evidence and leave it open.
+            - **Still present** → reply **only if there is something new**: the relevant code changed since `lastActivity`
+              (`git log --since="{lastActivity}" --format='%h %s' -- {path}` is non-empty) but did not fix it, or a human
+              replied after your last comment. Then state precisely what remains. Otherwise **stay silent** — the sticky
+              comment already lists it as unresolved; repeating "still unresolved" on every push is noise.
+            - **Partially fixed** → reply once with exactly what remains; leave it open.
+
+            Never open a new inline comment for an issue that already has a thread.
+
+            ## Step 2: Prepare
+
+            1. Run `gh pr view ${{ github.event.pull_request.number || inputs.pr_number }}` for the PR intent.
+            2. Run `gh pr diff ${{ github.event.pull_request.number || inputs.pr_number }}` for the current diff.
+            3. Follow the guidelines in REVIEW.md if present.
+
+            ## Step 3: Review
+
+            Analyze the diff in the context of the full codebase. For each changed file, read the **full source**
+            (not just the diff hunk). Use `git blame` / `git log` on suspicious lines. Follow calls across module boundaries.
+
+            ## Report defect classes, not just the instance you found
+
+            Before reporting, ask: is this one instance of something that exists in several places? If so, grep for the
+            sibling sites and file **one** finding that lists every location. A defect copied N times is one defect,
+            not N — reporting one copy per round makes the author pay a full review round per copy. Common shapes:
+
+            - The same contract copied into several files (code comment, doc, test name, error string): grep the
+              distinctive wording **and** the value/enum it describes, list every copy, name the source of truth.
+            - The same defect on sibling inputs (one env var / platform branch / overload misses a check — its siblings usually do too).
+
+            If the honest fix is a mechanical gate (a lint or test asserting the copies agree) rather than hand-editing N
+            copies, say so and propose the gate.
+
+            ## Confidence and severity
+
+            Score every finding 0-100. Only report findings with confidence ≥ 75.
+            - 90-100: certain bug or security issue
+            - 75-89: highly confident, very likely a real problem
+            - <75: do not report
+
+            Use severity levels: P1 (blocking / high-risk), P2 (meaningful), P3 (minor).
+
+            ## False-positive filters — do NOT report
+
+            - Issues that already existed before this PR
+            - Style preferences or nits that a linter/formatter handles
+            - Missing comments on self-explanatory code
+            - Hypothetical future problems
+            - Code that "could be better" but works correctly
+            - Generated files, lockfiles, vendored code
+
+            ## Step 4: New inline comments
+
+            Use `mcp__github_inline_comment__create_inline_comment` with `confirmed: true`, **only** for issues no existing
+            thread covers. At most 10 new findings. Check every candidate against the **full** thread list from Step 1,
+            including resolved ones: if a resolved thread covered the exact same issue and the code regressed, post a new
+            comment that explicitly says it is a regression of that thread.
+
+            Match resolved threads by the **meaning** of `gist`, not by position. Code moved to another file or far within
+            the same file still counts; pay extra attention to `isOutdated == true` threads (that code moved).
+            Only when a `gist` points at the same issue but 300 chars are not enough to decide, fetch that **one** thread:
+
+            ```
+            gh api graphql -f query='{ node(id:"{thread id}") { ... on PullRequestReviewThread { isResolved comments(first:20) { nodes { author { login } body } } } } }'
+            ```
+
+            This must go through GraphQL `node(id:)`: the REST single-comment endpoint is not in the allowed tools,
+            and a denial there could make you wrongly conclude there is no history.
+
+            ## Step 5: Rewrite the sticky comment
+
+            Finish with **one** `mcp__github_comment__update_claude_comment` call that replaces the whole body
+            (including any task list you kept while working) with the current state:
+
+            ```
+            ### Claude Code Review — `{short head sha}`
+
+            **Verdict:** ✅ Approved | ⚠️ Issues Found ({N} unresolved) | 🔴 Changes Requested
+
+            {One paragraph: what this PR does, whether the approach holds, where the risk is.}
+
+            | # | Severity | Location | Issue | Confidence |
+            |---|----------|----------|-------|------------|
+            | 1 | 🔴 P1 | `path:line` | one line; the argument lives in the inline thread | 85 |
+
+            <details><summary>Resolved this run ({M})</summary>
+
+            - `path:line` — what was wrong → fixed in {sha}
+            </details>
+            ```
+
+            Body rules (it is overwritten on every push):
+
+            - The table lists **only unresolved** issues — new ones and still-open older threads. Threads resolved in
+              Step 1 of this run go in the collapsed section; issues resolved in earlier runs are not mentioned.
+            - Verdict, sha and counts describe the **current head commit**. No "re-review", no round numbers, no narrative
+              about earlier commits — the comment's edit history plus the inline threads are the record.
+            - Keep it short: one line per issue. If nothing is unresolved, the body is the verdict, the paragraph and the
+              collapsed section. Do not pad.
+          # Tool surface. Comment creation is denied at the permission layer, not
+          # just by the prompt: no `gh pr comment`, and `gh api` is narrowed to
+          # GraphQL (thread query + resolveReviewThread) plus the single REST
+          # endpoint for replying to a review comment. Do not widen the replies
+          # pattern to `.../pulls/*`: that would also allow
+          # `POST .../pulls/N/reviews -f body=...`, a top-level-equivalent post.
+          # The prefix form `Bash(gh api repos/<repo>/pulls/:*)` does NOT match;
+          # `*` crosses `/` and spaces, so the glob form below is intended.
+          #
+          # GraphQL cannot be path-scoped (the mutation name lives inside
+          # `-f query=...`), so creation mutations are denied by glob; deny wins
+          # over allow. `Bash(gh api graphql:*addComment*)` would NOT match — keep
+          # the bare `Bash(*addComment*)` form. This is string matching, i.e.
+          # defense in depth; the prompt is still the first control.
+          #
+          # `track_progress` forces tag mode, which on its own adds
+          # `git add/commit/rm`, a git push wrapper and `acceptEdits` (file edits
+          # inside the workspace). A review job must stay read-only, so those are
+          # denied explicitly as well.
+          claude_args: |
+            --model '${{ inputs.model || 'claude-opus-5[1m]' }}'
+            --max-turns 256
+            --allowedTools "Read,Glob,Grep,mcp__github_comment__update_claude_comment,mcp__github_inline_comment__create_inline_comment,Bash(gh api graphql:*),Bash(gh api repos/*/pulls/*/comments/*/replies*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr checks:*),Bash(git log:*),Bash(git blame:*),Bash(git diff:*)"
+            --disallowedTools "Bash(*addComment*),Bash(*addPullRequestReview*),Bash(*pulls/*/reviews*),Bash(*issues/*/comments*),Bash(gh pr comment:*),Bash(gh pr review:*),Edit,MultiEdit,Write,NotebookEdit,Bash(git add:*),Bash(git commit:*),Bash(git rm:*),Bash(git push:*),Bash(*git-push.sh*),mcp__github_file_ops__commit_files,mcp__github_file_ops__delete_files"
         env:
           GH_TOKEN: ${{ github.token }}
           ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL || 'https://api.anthropic.com' }}
